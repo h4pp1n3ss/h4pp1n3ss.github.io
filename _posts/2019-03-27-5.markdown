@@ -1,0 +1,127 @@
+---
+layout: post
+title:  "SLAE32 - Linux x86 exec Payload Analysis"
+date:   2019-12-01 21:03:36 +0530
+categories: x86 ASM 
+---
+
+In this blog post we going to analyze the *Linux x86 exec Payload*. In order to undestand what this payload does we going to debug the program with GDB, LIBEMU, NISAM. This kind of analysis is very important when you need to identify the underlying functionality of a unknown shellcode.
+
+
+### Linux x86 exec Payload
+
+The `linux/x86/exec` payload is useful when you need to run a specific program on the target system. This payload use the `execve` syscall.
+
+In next image we execute the `msfvenom` command to set linux exec payload.
+
+![alt text][img-1]
+
+[img-1]: https://h4pp1n3ss.github.io/assets/images/p52-1.png "msfvenon options"
+
+For this example we are going to create a reverse TCP connection using nc command. We set the CMD parameter with this value:
+
+`msfvenon -p linux/x86/exec CMD="nc -le /bin/sh -vp 31337"`
+
+
+In the next image we can see how we setup the parameters and also using the option -f c set the output in C format.
+
+
+![alt text][img-2]
+
+[img-2]: https://h4pp1n3ss.github.io/assets/images/p52-2.png "C output"
+
+To analyze the payload without executing it we can use ndisasm tool. We piping the result of the echo command to ndisasm to get the Assembly Language Instruction of the payload.
+
+
+![alt text][img-3]
+
+[img-3]: https://h4pp1n3ss.github.io/assets/images/p52-3.png "ndisasm"
+
+
+To get a better idea of what the payload does we use the strace command. This command print a list of syscall used by the payload. In the next image we can see the `execve` syscall with the arguments defined using the msfvenon command.
+
+
+
+![alt text][img-4]
+
+[img-4]: https://h4pp1n3ss.github.io/assets/images/p52-4.png "strace"
+
+
+The execve need three arguments:
+
+1. The first argument is the */bin/sh*
+
+2. The second argument is an array of arguments in this case *["/bin/sh", "-c", "nc -le /bin/sh -vp 31337]*
+
+3. The three argument is an array of environment variables in this case NULL
+
+We open the program with GDB and with the command `readelf -h msf-exec` we can see the Entry point of the application.
+
+
+![alt text][img-5]
+
+[img-5]: https://h4pp1n3ss.github.io/assets/images/p52-5.png "readelf output"
+
+We set a break point using the command `break *0x8048054` this memory address is the Entry point of the application. 
+
+
+In the next Image we hit the breakpoint.
+
+
+![alt text][img-6]
+
+[img-6]: https://h4pp1n3ss.github.io/assets/images/p52-6.png "breakpoint hit"
+
+
+Using the `ni` or `next i` command you can move forward thorough the program execution. In the next image we can see a series of push instruction used for save the string `/bin/sh` into the stack. After the push instructions finishes the top of the stack point to this string.
+
+
+![alt text][img-7]
+
+[img-7]: https://h4pp1n3ss.github.io/assets/images/p52-7.png "gdb output"
+
+The  `mov ebx esp` instruction save in the ebx register the top of stack which contains the string `/bin/sh`. The program continue with call 0x804808a
+
+
+
+![alt text][img-8]
+
+[img-8]: https://h4pp1n3ss.github.io/assets/images/p52-8.png "gdb output"
+
+
+The execution of call save the next instruction into the stack in this case the string `nc -le /bin/sh -vp 31337` (this is the call-pop technique). In the next image we can see in the top of the stack the string.
+
+
+![alt text][img-9]
+
+[img-9]: https://h4pp1n3ss.github.io/assets/images/p52-9.png "gdb output"
+
+
+In the next image we can see how the stack is layout before calling the `execve` syscall. 
+
+```plaintext
+#include <unistd.h>
+
+	int execve(const char *filename, char *const argv[],char *const envp[]);
+
+```
+The first parameter is the pointer to the filename to execute. The second parameter `argv[]` contains the command-line arguments for when the filename is executed. Lastly the envp[] parameter contains an array of the environment variables that will be inherited by the filename that is executed. We pass the argument using FreeBSD convention.
+
+![alt text][img-10]
+
+[img-10]: https://h4pp1n3ss.github.io/assets/images/p52-10.png "gdb output"
+
+
+In the next image we can see how the program finish and open a `netcat` instance in the port 31337. Using the `netstat` command we can see the port opened.
+
+![alt text][img-11]
+
+[img-11]: https://h4pp1n3ss.github.io/assets/images/p52-11.png "gdb output"
+
+In this blog we analyze the `linux/x86/exec` payload of Metasploit-Framework.
+
+
+***
+
+
+

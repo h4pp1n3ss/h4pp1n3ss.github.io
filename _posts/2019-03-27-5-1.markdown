@@ -1,0 +1,182 @@
+---
+layout: post
+title:  "SLAE32 - Linux Add User Payload Analysis"
+date:   2019-11-25 21:03:36 +0530
+categories: x86 ASM PAYLOAD LINUX
+---
+
+
+In this blog post we going to analyze the *Linux Add User Payload*  . In order to understand what this payload does we going to debug the program with GDB, LIBEMU, NISAM. This kind of analysis is very important when you need to identify the underlying functionality of a unknown shellcode.
+
+### Linux Add User Payload
+
+
+This payload add a new user into the system using the open and write syscall to modify the /etc/passwd file. Using the option **--list-options** in msfvenon you can see all the options available for the current payload.
+In this case the payload requires two options **PASS** and **USER** for this example we will use the default values.
+
+
+![alt text][img-1]
+
+[img-1]: https://h4pp1n3ss.github.io/assets/images/p51.png "MSFVenon payload options"
+
+
+For this assignment we need to analyze the shellcode so we use the **-f c** option to output the shellcode in C format.
+
+
+![alt text][img-2]
+
+[img-2]: https://h4pp1n3ss.github.io/assets/images/p52.png "C format output"
+
+
+Another option available is the elf format this option create an ELF file (executable) on the system. We create the ELF file using the option **-f elf**. With the command **file** and **hd** you can analyze the file generated, in the next image we can see the output of each command. Using the `hd` command you can check various section of the file including the `ELF HEADER`
+
+
+![alt text][img-3]
+
+[img-3]: https://h4pp1n3ss.github.io/assets/images/p53.png "ELF Header"
+
+Using `strace` command we can find the syscall used by the program.
+
+![alt text][img-4]
+
+[img-4]: https://h4pp1n3ss.github.io/assets/images/p54.png "strace output"
+
+
+This is a very basic analysis of the executable but in the next section we going to use more special tools GDB and NDISAM.
+
+
+### Enjoy with NDISASM/GDB
+
+This program output the shellcode in a list of instruction so we can clearly see what the program does.
+
+![alt text][img-5]
+
+[img-5]: https://h4pp1n3ss.github.io/assets/images/p55.png "NDISASM output"
+
+We open the file with GDB and use the command shell **readelf -h adduser** to obtain the entry point of the application. Also we set the first breakpoint.
+
+![alt text][img-6]
+
+[img-6]: https://h4pp1n3ss.github.io/assets/images/p56.png "readelf output"
+
+With PEDA extension of **GDB** we can display the information in a better manner so we can see the registers, code section and stack in a simple panel.
+
+### NR_setgeid syscall
+
+We run the program and hit the first breakpoint, the next instruction is push 0x46 to the top of the stack.
+
+
+![alt text][img-7]
+
+[img-7]: https://h4pp1n3ss.github.io/assets/images/p57.png "GDB output"
+
+The value 0x46 represent the number for the syscall **setgid** which set the effective group ID of the process.
+
+![alt text][img-8]
+
+[img-8]: https://h4pp1n3ss.github.io/assets/images/p58.png "setgid user manual"
+
+Lets move to the next section of the program
+
+### NR_OPEN syscall
+
+In the next image we can see the following:
+
+
+1. **eax** register contains 0x5 (first argument)
+2. **ebx** register points to the top of ESP which contains /etc//passwd (second argument)
+3. **ecx** register contains 0x401 (third argument)
+4. **eip** register points to the int 0x80 instruction which is the syscall interrupt.
+
+
+![alt text][img-9]
+
+[img-9]: https://h4pp1n3ss.github.io/assets/images/p59.png "GDB output"
+
+This program use the open syscall **#define NR_open** to open the file **/etc/passwd**. We can use the command **man 2 open** to see more information about this syscall. In the next Image we can see this information.
+
+![alt text][img-10]
+
+[img-10]: https://h4pp1n3ss.github.io/assets/images/p510.png "open user manual"
+
+The sycall need two arguments **char pathname** and a **flags** this values was given using the linux convention (register). The ebx to setup pathname with the value **/etc//passwd** and ecx to set the value flags with 0x401.
+
+Lets move with the next section of the program.
+
+### NR_write syscall
+
+After the program open the file **/etc/passwd** the next procedure is write into the file. In the next Image we can see how the program setup the **eax** register to invoke the write syscall.
+
+![alt text][img-11]
+
+[img-11]: https://h4pp1n3ss.github.io/assets/images/p511.png "GDB output"
+
+
+This syscall need three arguments:
+
+1. **int fd** this is a file descriptor. The ebx register contains this value.
+2. **void *buf** what we want to write. The ecx register contains this value.
+3. **sise_t count** has the value 28h which is 39 in decimal. The edx register contains this value.
+
+In the next Image we can see the arguments needed for this syscall.
+
+![alt text][img-12]
+
+[img-12]: https://h4pp1n3ss.github.io/assets/images/p512.png "GDB output"
+
+There is an obfuscate value in the ecx register  `Az/dIsj4p4IRc` this is the encrypted password returned by Metasploit Framework payload script.
+
+
+![alt text][img-13]
+
+[img-13]: https://h4pp1n3ss.github.io/assets/images/p513.png "user password"
+
+You can see the crypt function in the file **adduser.rb** located in:
+
+**/usr/share/metasploit-framework/modules/payloads/singles/linux/x86**
+
+
+![alt text][img-14]
+
+[img-14]: https://h4pp1n3ss.github.io/assets/images/p514.png "adduser.rb file content"
+
+We can check this functionality using **irb** command:
+
+
+![alt text][img-15]
+
+[img-15]: https://h4pp1n3ss.github.io/assets/images/p515.png "irb command"
+
+
+Before call the kernel we check if the file **/etc/passwd** contains the user metasploit using the cat/grep command.
+
+![alt text][img-16]
+
+[img-16]: https://h4pp1n3ss.github.io/assets/images/p516.png "gdb output"
+
+Next we execute the program and confirm that the user **metasploit** was added to the fole **/etc/passwd**
+
+![alt text][img-18]
+
+[img-18]: https://h4pp1n3ss.github.io/assets/images/p5118.PNG "gdb output"
+
+Great!!
+
+***
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
