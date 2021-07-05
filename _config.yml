@@ -18,7 +18,7 @@ sass:
   sass_dir: _sass
 plainwhite:
   name: h4pp1n3ss 
-  tagline: Security Monkey 
+  tagline: 
   date_format: "%b %-d, %Y"
   sitemap: true # set to true to generate sitemap.xml content
   dark_mode: true
